@@ -1,27 +1,34 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- module UI
-    -- (
-    -- ) where
+module UI
+    (
+    -- * Initializing
+      initUI
+    -- * Data definitions
+    , UICommand (..)
+    , UIState (..)
+    ) where
 
-import Control.Applicative
+import Control.Applicative hiding ((<|>))
 import Control.Concurrent
-import qualified Control.Exception as E
 import Control.Monad.State
+import qualified Control.Exception as E
+import qualified Data.Map          as M
+import qualified Data.Maybe        as Maybe
+import qualified Data.List         as L
 
-import qualified Data.Map   as M
-import qualified Data.Maybe as Maybe
-
-import UI.HSCurses.Curses
-import UI.HSCurses.CursesHelper
+import Graphics.Vty
 
 import Go
 
 data UIState = UIState
-    { window        :: Window
+    { vty           :: Vty
     , game          :: Game
     , uiCommand     :: MVar UICommand
+    , cursor        :: Cursor
+    , query         :: MVar UIState
     }
+
 
 type UI a = StateT UIState IO a
 
@@ -34,188 +41,174 @@ data UICommand = Put Player Pos
                | CursorRight
                -- drawing the window
                | Redraw
-               | Resize
+               | Resize Int Int
                -- shutdown
-               -- | Shutdown
+               | Shutdown
+               -- Queries
+               | AskState
 
-main = do
-    start
+data Direction = DUp | DDown | DLeft | DRight
 
-    (tId, sendUI) <- initUI (9,9)
 
-    E.handle (\(e :: E.IOException) -> {- sendUI Shutdown >> -} end) . forever $ do
 
-    key <- getCh
-    case key of
-         KeyResize      -> sendUI Resize
-
-         KeyUp          -> sendUI CursorUp
-         KeyDown        -> sendUI CursorDown
-         KeyLeft        -> sendUI CursorLeft
-         KeyRight       -> sendUI CursorRight
-
-         KeyChar '1'    -> sendUI $ PutAtCurrentPos A
-         KeyChar '2'    -> sendUI $ PutAtCurrentPos B
-
-         KeyF 1         -> killThread tId >> fail "Shutdown"
-
-         _ -> return ()
-
+--------------------------------------------------------------------------------
+-- Start listening for UI events
+--------------------------------------------------------------------------------
 
 -- | Initiate and run our UI state
 initUI :: (Int, Int)   -- ^ size of the game
-       -> IO (ThreadId, UICommand -> IO ())
-initUI (h,w) = do
+       -> Vty          -- ^ Vty output
+       -> IO (ThreadId, IO UIState, UICommand -> IO ())
+initUI (h,w) vty = do
 
-    let w'  = w*2 + 3
-        h'  = h   + 3
-
-    win <- newWin h' w' 0 0
-    wMove win 1 2
-    cmd <- newMVar Resize
+    cmd <- newMVar Redraw
+    qry <- newEmptyMVar
 
     let game = startGame (w,h)
+        curs = Cursor 1 1
+        ask  = do putMVar cmd AskState; takeMVar qry
 
-    id <- forkIO $ () <$ evalStateT handleCommands (UIState win game cmd) -- `E.catch` \(e :: E.IOException) -> return ()
+    -- start handling commands
+    tId <- forkIO $ () <$ evalStateT handleCommands (UIState vty game cmd curs qry) `E.catch` \(_ :: E.IOException) -> return ()
 
-    return (id, putMVar cmd)
+    return (tId, ask, putMVar cmd)
 
 -- | Handle incoming commands from other threads
 handleCommands :: UI ()
 handleCommands = forever $ do
 
-    UIState { uiCommand = mvar } <- get
+    UIState { uiCommand = mvar, query = qry, cursor = (Cursor cX cY) } <- get
     cmd <- liftIO $ takeMVar mvar
 
-    let putGame p pos = do
-        modify $ \s@(UIState { game = game }) ->
-            let (valid,newGame) = playerPut p pos game
-            in s { game = if valid
-                             then newGame
-                             else game
-                 }
-        drawGame
-
     case cmd of
-         Redraw      -> drawGame
-         Resize      -> resize
 
-         Put p pos         -> putGame p pos
-         PutAtCurrentPos p -> getCurrentPos >>= putGame p
+         Redraw             -> drawGame
+         Resize x y         -> resize (x,y)
 
-         CursorUp    -> moveCursor (subtract 1) id
-         CursorDown  -> moveCursor (+1)         id
-         CursorLeft  -> moveCursor id           (subtract 2)
-         CursorRight -> moveCursor id           (+2)
+         Put p pos          -> putGame p pos
+         PutAtCurrentPos p  -> putGame p (fromIntegral cX, fromIntegral cY)
 
-         -- Shutdown    -> fail "Shutting down ncurses."
+         CursorUp           -> moveCursor DUp
+         CursorDown         -> moveCursor DDown
+         CursorLeft         -> moveCursor DLeft
+         CursorRight        -> moveCursor DRight
 
-resize :: UI ()
-resize = do
-    UIState { window = win } <- get
+         Shutdown           -> fail "handleCommands: Shutdown"
 
-    -- liftIO $ do
-        -- endWin
-        -- resetParams
+         AskState           -> get >>= liftIO . putMVar qry
 
-    (y, x) <- liftIO $ resizeui
-    (h, w) <- liftIO $ getMaxYX win
 
-    let
-        y' = (y - h) `quot` 2
-        x' = (x - w) `quot` 2
+--------------------------------------------------------------------------------
+-- User controls
+--------------------------------------------------------------------------------
 
-    liftIO $ do
-        mvWin win y' x'
-        wclear stdScr
-        refresh
+-- | Put a new stone to the game
+putGame :: Player -> Pos -> UI ()
+putGame p pos = do
+
+    -- update our game
+    modify $ \s@(UIState { game = game }) ->
+        let (valid,newGame) = playerPut p pos game
+        in s { game = if valid
+                         then newGame
+                         else game
+             }
+
+    -- draw it
+    drawGame
+
+-- | Move the cursor
+moveCursor dir = do
+
+    let (fX,fY) = case dir of
+                         DUp     -> (id,            subtract 1)
+                         DDown   -> (id,            (+1))
+                         DLeft   -> (subtract 1,    id)
+                         DRight  -> ((+1),          id)
+
+    modify $ \s@(UIState { cursor = (Cursor x y), game = game }) ->
+        let
+            ((gameX,gameY),_) = M.findMax (gameMap game)
+            (x',y') = case (fX x, fY y) of
+                           (xx,yy) | 1 <= xx && xx <= (fromIntegral gameX) && 1 <= yy && yy <= (fromIntegral gameY) -> (xx,yy)
+                           _ -> (x,y)
+
+
+        in  s { cursor = Cursor x' y' }
 
     drawGame
 
 
--- | Current position of the cursor. Note: Whereas the cursor position in
--- ncurses is usually (y,x) this will return the actual (x,y) position as used
--- in the Go module.
-getCurrentPos :: UI Pos
-getCurrentPos = do
-    UIState { window = win } <- get
-
-    (curY, curX) <- liftIO $ getYX win
-
-    let y = curY
-        x = (curX `quot` 2)
-
-    return $! (x,y)
-
--- | Move our cursor
-moveCursor :: (Int -> Int) -- ^ row modifier
-           -> (Int -> Int) -- ^ col modifier
-           -> UI ()
-moveCursor yF xF = do
-    UIState { window = win } <- get
-
-    (curY, curX) <- liftIO $ getYX win
-    (maxY, maxX) <- liftIO $ getMaxYX win
-
-    -- schwachsinn... funktioniert noch nich
-    case (yF curY, xF curX) of
-         (y,x) | 0 < y && y < (maxY - 2) && 1 < x && x < (maxX - 2) -> do
-             liftIO $ wMove win y x
-             drawGame
-         _ -> return ()
 
 
--- | Draw the current game
+--------------------------------------------------------------------------------
+-- Drawing stuff
+--------------------------------------------------------------------------------
+
+-- | Draw game, call resize with current terminal width/height
 drawGame :: UI ()
 drawGame = do
 
-    UIState { window = win, game = game } <- get
+    UIState { vty = vty, game = game } <- get
 
-    let ((sizeX,sizeY),_) = M.findMax (gameMap game)
+    -- get current screen size
+    (x,y) <- liftM2 (,) region_width region_height <$> display_bounds (terminal vty)
 
-    -- remember cursor position
-    (y,x) <- liftIO $ getYX win
+    resize (fromIntegral x, fromIntegral y)
 
-    liftIO $ do
-        -- upper border
-        mvWAddStr win 0 0 $ [ulCorner]
-                         ++ take (sizeX*2 +1) (cycle [hLine])
-                         ++ [urCorner]
-        -- scores
-        mvWAddStr win 0 2 $ "X:" ++ show (scoreA game)
-        let scB = "O:" ++ show (scoreB game)
-        mvWAddStr win 0 (sizeX*2+1 - length scB) scB
+-- | Resize & redraw the current game
+resize :: (Int, Int) -- ^ display bounds (from EvResize)
+       -> UI ()
+resize (x,y) = do
 
-    -- game field
-    mapM_ drawRow [1..sizeY]
+    UIState { vty = vty, game = game, cursor = (Cursor cX cY) } <- get
 
-    liftIO $ do
-        -- lower border
-        mvWAddStr win (sizeY+1) 0 $ [llCorner] ++ (take (sizeX*2 +1) $ cycle [hLine]) ++ [lrCorner]
+    let gameIm = gameImage game
+        gameX  = fromIntegral $ image_width  gameIm
+        gameY  = fromIntegral $ image_height gameIm
 
-        -- reset cursor
-        wMove win y x
-        wRefresh win
+        y'      = (y - gameY) `quot` 2
+        x'      = (x - gameX) `quot` 2
 
+        top     = char_fill def_attr ' ' 1 y'
+        left    = char_fill def_attr ' ' x' 1
 
--- | Draw one single row
-drawRow :: Int -> UI ()
-drawRow n = do
+        cursX   = x' + (fromIntegral cX)*2
+        cursY   = y' + fromIntegral cY
+        cursor  = if 0 < cursX && cursX < x && 0 < cursY && cursY < y
+                     then Cursor (fromIntegral cursX) (fromIntegral cursY)
+                     else NoCursor
 
-    UIState { window = win, game = game } <- get
+        picture = Picture cursor (top <-> (left <|> gameIm)) (Background ' ' def_attr)
 
+    liftIO $ update vty picture
+
+-- | Image for our game
+gameImage :: Game
+          -> Image
+gameImage game = 
     let
-        row = M.elems $ M.filterWithKey (\(_,y) _ -> y == n) (gameMap game)
-        style st f = do
-            style <- head <$> convertStyles [st]
-            wWithStyle win style f
 
-        drawField (Just A) = wAddStr win " " >> style (Style GreenF DefaultB) (wAddStr win "×")
-        drawField (Just B) = wAddStr win " " >> style (Style RedF   DefaultB) (wAddStr win "O")
-        drawField Nothing  = wAddStr win " ·"
+        ((x,y),_)   = M.findMax (gameMap game)
 
-    liftIO $ do
-        mvWAddStr win n 0 [vLine]
-        mapM_ drawField row
-        mvWAddStr win n (length row * 2 +1) [' ', vLine]
+        scoreA'     = [vertic] ++ "A:" ++ show (scoreA game)
+        scoreB'     = "B:" ++ show (scoreB game) ++ [vertic]
 
+        topRow      = string def_attr $ [upperL] ++ scoreA' ++ replicate (x * 2 + 1 - length scoreA' - length scoreB') vertic ++ scoreB' ++ [upperR]
+        botRow      = string def_attr $ [lowerL] ++ replicate (x * 2 + 1) vertic ++ [lowerR]
+
+        drawField (Just A) = string (def_attr `with_fore_color` bright_green) " O"
+        drawField (Just B) = string (def_attr `with_fore_color` bright_red  ) " X"
+        drawField Nothing  = string (def_attr `with_fore_color` bright_black) " ·"
+
+        row n       = string def_attr [horiz] <|> (horiz_cat . map drawField . M.elems $ M.filterWithKey (\(_,y) _ -> y == n) (gameMap game)) <|> string def_attr [' ',horiz]
+
+    in topRow <-> (vert_cat $ map row [1..y]) <-> botRow
+
+-- | Border stuff...
+upperL = '┌'
+upperR = '┐'
+lowerL = '└'
+lowerR = '┘'
+vertic = '─'
+horiz  = '│'
