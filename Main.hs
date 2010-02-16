@@ -58,21 +58,18 @@ startHost size port = do
 
     (read, tell) <- startServer $ fromMaybe defaultPort port
 
-    let quit = do tell Bye; putStrLn "> BYE"
-
     aw <- read
     case aw of
+
          Hello -> do
-             putStrLn "< HELLO"
              tell $ Size size
-             putStrLn $ "> SIZE " ++ show size
              aw <- read
              case aw of
                   Ok Nothing -> do
-                      putStrLn "< OK"
                       startControling True read tell size
-                  _  -> quit
-         _ -> quit
+                  _  -> tell Bye
+
+         _ -> tell Bye
 
 -- | Start client
 startClient :: Maybe HostName -> Maybe PortNumber -> IO ()
@@ -81,19 +78,12 @@ startClient (Just ip) port = do
     (read, tell) <- connect ip $ fromMaybe defaultPort port
 
     tell Hello
-    putStrLn "> HELLO"
 
     aw <- read
     case aw of
 
          Size s -> do
-             putStrLn $ "< SIZE " ++ show s
-
              tell $ Ok Nothing
-             putStrLn $ "> OK"
              startControling False read tell s
 
-         _ -> do
-             putStrLn "< ?"
-             tell Bye
-             putStrLn "> BYE"
+         _ -> tell Bye
