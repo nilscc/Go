@@ -1,37 +1,60 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 module Main () where
 
+import Control.Applicative
 import Control.Monad
 import Control.Concurrent
 import Data.Maybe (fromMaybe)
 import Graphics.Vty
 import System.Environment (getArgs)
+import System.IO
 import Network
 import qualified Control.Exception as E
 
+import Control
 import Go
 import UI
 import Net
 
 defaultPort = 5342
-size = (9,9)
+defaultSize = 9 -- (9,9)
+
+showUsage = putStrLn "Go! Usage: client [IP [PORT]] | server [PORT]"
 
 main = do
 
+    -- todo: better argument handling
     args <- getArgs
     case args of
          ["client",ip]       -> startClient (Just ip) Nothing
          ["client",ip,port]  -> startClient (Just ip) (Just . fromIntegral $ read port)
-         ["server"]          -> startHost Nothing
-         ["server",port]     -> startHost (Just . fromIntegral $ read port)
+         ["server"]          -> startHost defaultSize Nothing
+         ["server",port]     -> startHost defaultSize (Just . fromIntegral $ read port)
+         []                  -> commandLine
          _                   -> showUsage
 
-showUsage = putStrLn "Go! Usage: client [IP [PORT]] | server [PORT]"
+
+-- | Configure from command line
+commandLine :: IO ()
+commandLine = do
+    let prompt s = putStr s >> hFlush stdout >> getLine
+        opt s = if null s then Nothing else Just s
+
+    ip <- prompt "Server adress [start new server]: "
+    port <- prompt "Port [5342]: "
+
+    if null ip
+       then do
+           size <- prompt "Size [9]: "
+           startHost (fromMaybe defaultSize $ read <$> opt size) (fromIntegral . read <$> opt port)
+
+       else do
+           startClient (opt ip) (fromIntegral . read <$> opt port)
 
 
 -- | Start server
-startHost :: Maybe PortNumber -> IO ()
-startHost port = do
+startHost :: Int -> Maybe PortNumber -> IO ()
+startHost size port = do
 
     (read, tell) <- startServer $ fromMaybe defaultPort port
 
@@ -45,9 +68,9 @@ startHost port = do
              putStrLn $ "> SIZE " ++ show size
              aw <- read
              case aw of
-                  Ok -> do
+                  Ok Nothing -> do
                       putStrLn "< OK"
-                      start' True read tell size
+                      startControling True read tell size
                   _  -> quit
          _ -> quit
 
@@ -66,57 +89,11 @@ startClient (Just ip) port = do
          Size s -> do
              putStrLn $ "< SIZE " ++ show s
 
-             tell Ok
+             tell $ Ok Nothing
              putStrLn $ "> OK"
-             start' False read tell s
+             startControling False read tell s
 
          _ -> do
              putStrLn "< ?"
              tell Bye
              putStrLn "> BYE"
-
-
--- | Init UI and start playing!
-start' :: Bool                  -- our turn?
-       -> (IO Message)
-       -> (Message -> IO ())
-       -> (Int, Int)
-       -> IO ()
-start' begin read tell size = do
-
-    vty <- mkVty
-
-    -- init UI
-    (tId, uiState, sendUI) <- initUI size vty
-
-    let safe = E.handle (\(_ :: E.IOException) -> do tell Bye; shutdown vty)
-
-    forkIO . safe . forever $ do
-        msg <- read
-        case msg of
-             Net.Put p -> sendUI $ UI.Put B p
-             _ -> return ()
-
-    safe .  forever $ do
-
-        key <- next_event vty
-        case key of
-
-             EvResize x y           -> sendUI $ Resize x y
-
-             EvKey KUp    []        -> sendUI CursorUp
-             EvKey KDown  []        -> sendUI CursorDown
-             EvKey KLeft  []        -> sendUI CursorLeft
-             EvKey KRight []        -> sendUI CursorRight
-
-             EvKey KEnter []        -> do
-
-                 UIState { cursor = Cursor x y } <- uiState
-                 let pos = (fromIntegral x, fromIntegral y)
-                 tell $ Net.Put pos
-                 sendUI $ UI.Put A pos
-
-             -- shutdown
-             EvKey KEsc   []        -> killThread tId >> fail "Shutdown"
-
-             _ -> sendUI Redraw

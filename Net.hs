@@ -5,6 +5,7 @@ module Net
     , startServer
     -- * Data definitions
     , Message (..)
+    , Id
     ) where
 
 import Control.Applicative
@@ -48,6 +49,7 @@ startServer port = do
 
     start h
 
+
 -- | Start everything...
 start :: Handle -> IO (IO Message, Message -> IO ())
 start h = do
@@ -59,9 +61,12 @@ start h = do
     threads <- newEmptyMVar
     what    <- newEmptyMVar
 
-    let safe = E.handle $ \(_ :: E.IOException) -> do
+    let safe = E.handle $ \(e :: E.IOException) -> do
         ids <- fromMaybe [] <$> tryTakeMVar threads
-        mapM_ killThread ids
+        unless (null ids) $ do
+            -- debug:
+            putStrLn $ "Error: \"" ++ show e ++ "\". Killing threads: " ++ show ids
+            mapM_ killThread ids
 
     lId <- forkIO . safe . forever $ listenForIncoming h (writeChan read) (putMVar tell) what
     cId <- forkIO . safe . forever $ handleCommands    h (takeMVar tell)
@@ -70,10 +75,11 @@ start h = do
 
     return (readChan read, putMVar tell)
 
+
 -- | Listen on handle
 listenForIncoming :: Handle                 -- ^ handle to listen on
                   -> (Message -> IO ())     -- ^ reply function
-                  -> (Message -> IO ())    -- ^ tell  function
+                  -> (Message -> IO ())     -- ^ tell  function
                   -> MVar ()                -- ^ mvar whether we're waiting for a "WHAT"
                   -> IO ()
 listenForIncoming handle reply tell what = do
@@ -82,19 +88,21 @@ listenForIncoming handle reply tell what = do
 
     case decode l of
 
+         {- I'm not sure if I want this to quit automaticly:
          Bye  -> do
              hClose handle
              fail "listenForIncoming: Connection closed by remote side"
+         -}
 
          What -> do
              empty <- isEmptyMVar what
              when empty $ do
-                tell What -- send "what?!" reply
-                putMVar what ()  -- remember what reply
+                tell What           -- send "what?!" reply
+                putMVar what ()     -- remember what reply
 
-         msg  -> do
-             tryTakeMVar what -- "reset" what
-             reply msg        -- everything ok here
+         msg -> do
+             tryTakeMVar what       -- "reset" what
+             reply msg              -- everything ok here
 
 
 -- | Handle incoming events

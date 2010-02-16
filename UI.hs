@@ -11,82 +11,88 @@ module UI
 
 import Control.Applicative hiding ((<|>))
 import Control.Concurrent
-import Control.Monad.State
-import qualified Control.Exception as E
-import qualified Data.Map          as M
-import qualified Data.Maybe        as Maybe
-import qualified Data.List         as L
+import Control.Monad.State hiding (get, modify)
+
+import qualified Control.Monad.State as ST
+import qualified Control.Exception   as E
+import qualified Data.Map            as M
+import qualified Data.Maybe          as Maybe
+import qualified Data.List           as L
 
 import Graphics.Vty
 
 import Go
+
 
 data UIState = UIState
     { vty           :: Vty
     , game          :: Game
     , uiCommand     :: MVar UICommand
     , cursor        :: Cursor
-    , query         :: MVar UIState
     }
 
+type UI a = StateT (MVar UIState) IO a
 
-type UI a = StateT UIState IO a
-
-data UICommand = Put Player Pos
-               | PutAtCurrentPos Player
-               -- movement
-               | CursorUp
-               | CursorDown
-               | CursorLeft
-               | CursorRight
-               -- drawing the window
-               | Redraw
-               | Resize Int Int
-               -- shutdown
-               | Shutdown
-               -- Queries
-               | AskState
+data UICommand
+    -- movement
+    = CursorUp
+    | CursorDown
+    | CursorLeft
+    | CursorRight
+    -- drawing the window
+    | Redraw Game
+    | Resize Int Int
+    -- shutdown
+    | Shutdown
 
 data Direction = DUp | DDown | DLeft | DRight
 
-
+-- | mvar state access
+get :: UI UIState
+get = ST.get >>= liftIO . readMVar
+modify :: (UIState -> UIState) -> UI ()
+modify f = ST.get >>= liftIO . (modifyMVar_ `flip` (return . f))
 
 --------------------------------------------------------------------------------
 -- Start listening for UI events
 --------------------------------------------------------------------------------
 
 -- | Initiate and run our UI state
-initUI :: (Int, Int)   -- ^ size of the game
-       -> Vty          -- ^ Vty output
-       -> IO (ThreadId, IO UIState, UICommand -> IO ())
-initUI (h,w) vty = do
+initUI :: Game                          -- ^ initial game
+       -> IO ( ThreadId                 -- ^ UI thread
+             , IO Event                 -- ^ Vty events
+             , IO Cursor                -- ^ current cursor position
+             , UICommand -> IO ()
+             )
+initUI game = do
 
-    cmd <- newMVar Redraw
-    qry <- newEmptyMVar
+    let curs      = Cursor 1 1
 
-    let game = startGame (w,h)
-        curs = Cursor 1 1
-        ask  = do putMVar cmd AskState; takeMVar qry
+    vty   <- mkVty
+    cmd   <- newMVar $ Redraw game
+    state <- newMVar $ UIState vty game cmd curs
 
     -- start handling commands
-    tId <- forkIO $ () <$ evalStateT handleCommands (UIState vty game cmd curs qry) `E.catch` \(_ :: E.IOException) -> return ()
+    tId <- forkIO $ () <$ evalStateT handleCommands state `E.catch` \(_ :: E.IOException) -> return ()
 
-    return (tId, ask, putMVar cmd)
+    let askCursor = cursor <$> readMVar state
+
+    return (tId, next_event vty, askCursor, putMVar cmd)
 
 -- | Handle incoming commands from other threads
 handleCommands :: UI ()
 handleCommands = forever $ do
 
-    UIState { uiCommand = mvar, query = qry, cursor = (Cursor cX cY) } <- get
+    UIState { uiCommand = mvar, cursor = (Cursor cX cY) } <- get
     cmd <- liftIO $ takeMVar mvar
 
     case cmd of
 
-         Redraw             -> drawGame
+         Redraw game        -> drawGame $ Just game
          Resize x y         -> resize (x,y)
 
-         Put p pos          -> putGame p pos
-         PutAtCurrentPos p  -> putGame p (fromIntegral cX, fromIntegral cY)
+         -- Put p pos          -> putGame p pos
+         -- PutAtCurrentPos p  -> putGame p (fromIntegral cX, fromIntegral cY)
 
          CursorUp           -> moveCursor DUp
          CursorDown         -> moveCursor DDown
@@ -95,29 +101,13 @@ handleCommands = forever $ do
 
          Shutdown           -> fail "handleCommands: Shutdown"
 
-         AskState           -> get >>= liftIO . putMVar qry
-
 
 --------------------------------------------------------------------------------
 -- User controls
 --------------------------------------------------------------------------------
 
--- | Put a new stone to the game
-putGame :: Player -> Pos -> UI ()
-putGame p pos = do
-
-    -- update our game
-    modify $ \s@(UIState { game = game }) ->
-        let (valid,newGame) = playerPut p pos game
-        in s { game = if valid
-                         then newGame
-                         else game
-             }
-
-    -- draw it
-    drawGame
-
 -- | Move the cursor
+moveCursor :: Direction -> UI ()
 moveCursor dir = do
 
     let (fX,fY) = case dir of
@@ -128,15 +118,15 @@ moveCursor dir = do
 
     modify $ \s@(UIState { cursor = (Cursor x y), game = game }) ->
         let
+
             ((gameX,gameY),_) = M.findMax (gameMap game)
             (x',y') = case (fX x, fY y) of
                            (xx,yy) | 1 <= xx && xx <= (fromIntegral gameX) && 1 <= yy && yy <= (fromIntegral gameY) -> (xx,yy)
                            _ -> (x,y)
 
+        in s { cursor = Cursor x' y' }
 
-        in  s { cursor = Cursor x' y' }
-
-    drawGame
+    drawGame Nothing
 
 
 
@@ -146,10 +136,14 @@ moveCursor dir = do
 --------------------------------------------------------------------------------
 
 -- | Draw game, call resize with current terminal width/height
-drawGame :: UI ()
-drawGame = do
+drawGame :: Maybe Game -> UI ()
+drawGame game = do
 
-    UIState { vty = vty, game = game } <- get
+    case game of
+         Just g -> modify $ \s -> s { game = g }
+         _ -> return ()
+
+    UIState { vty = vty } <- get
 
     -- get current screen size
     (x,y) <- liftM2 (,) region_width region_height <$> display_bounds (terminal vty)
