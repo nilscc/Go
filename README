@@ -1,0 +1,32 @@
++------------------------------------------------------------------------------+
+|                                                                              |
+| Go! - A Haskell Go Game                                                      |
+|                                                                              |
++------------------------------------------------------------------------------+
+
+Author: Nils Schweinsberg <mail@n-sch.de>
+
+
+Keys:
+
+    <Cursor> - Move game cursor
+    <Enter>  - Put a stone at current position
+    F1       - Exit
+
+
+Quick rules:
+
+Kill all hostile stones! A stone is dead when it's completly surrounded by
+hostile stones:
+
+  · X ·                     · X ·
+  X O ·             ->      X · X           (Point for X)
+  · X ·                     · X ·
+
+A group is killed if every stone in it is dead:
+
+  · X X X X ·               · X X X X ·
+  X O O O O ·       ->      X · · · · X     (4 Points for X)
+  · X X X X ·               · X X X X ·
+
+The game is over when both player pass (currently not implemented).
