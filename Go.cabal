@@ -1,0 +1,23 @@
+Name:                Go
+Version:             0.1
+License:             BSD3
+License-file:        LICENSE
+Author:              Nils Schweinsberg
+Copyright:           © xxxx by Nils Schweinsberg
+Maintainer:          mail@n-sch.de
+Build-Type:          Simple
+Cabal-Version:       >= 1.8
+Category:            Game
+Homepage:            https://github.com/mcmaniac/Go
+Data-Files:          
+
+Synopsis:            Simple Go Client/Server
+Description:         Simple Go Client/Server
+
+Executable Go
+    Main-is:            Main.hs
+    Other-Modules:      Go, Control, UI
+    GHC-Options:        -Wall
+    HS-Source-Dirs:     src
+
+    Build-Depends:      base == 4.*, mtl == 2.*, vty == 4.*, network == 2.*, parsec == 2.*, containers, random
