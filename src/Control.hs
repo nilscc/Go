@@ -224,9 +224,13 @@ handleKeyBoardInput = do
              EvResize x y           -> liftIO . sendUI $ Resize x y
 
              EvKey KUp    []        -> liftIO $ sendUI CursorUp
+             EvKey (KASCII 'k') []  -> liftIO $ sendUI CursorUp
              EvKey KDown  []        -> liftIO $ sendUI CursorDown
+             EvKey (KASCII 'j') []  -> liftIO $ sendUI CursorDown
              EvKey KLeft  []        -> liftIO $ sendUI CursorLeft
+             EvKey (KASCII 'h') []  -> liftIO $ sendUI CursorLeft
              EvKey KRight []        -> liftIO $ sendUI CursorRight
+             EvKey (KASCII 'l') []  -> liftIO $ sendUI CursorRight
 
              EvKey KEnter []        -> do
 
