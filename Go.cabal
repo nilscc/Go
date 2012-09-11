@@ -20,4 +20,4 @@ Executable Go
     GHC-Options:        -Wall
     HS-Source-Dirs:     src
 
-    Build-Depends:      base == 4.*, mtl == 2.*, vty == 4.*, network == 2.*, parsec == 2.*, containers, random
+    Build-Depends:      base == 4.*, mtl, vty, network, parsec, containers, random

@@ -15,16 +15,6 @@ import Control.Monad
 import Text.ParserCombinators.Parsec hiding (many, optional, (<|>), string)
 import qualified Text.ParserCombinators.Parsec as P
 
--- Every Monad is an Applicative.
-instance Applicative (GenParser s a) where
-    pure = return
-    (<*>) = ap
-
--- Every MonadPlus is an Alternative.
-instance Alternative (GenParser s a) where
-    empty = mzero
-    (<|>) = mplus
-
 type Id = Int
 type Pos = (Int,Int)
 
